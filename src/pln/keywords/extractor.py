@@ -1,0 +1,107 @@
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+from ..schemas import AspectoDetectado, Polaridade, Sentimento
+from ..texto import normalizar_para_busca
+from .aspects import ASPECTOS, JANELA_NEGACAO, NEGACOES, VERSAO_LEXICO
+
+
+@dataclass(frozen=True, slots=True)
+class _Entrada:
+    aspecto: str
+    termo: str
+    polaridade_base: Polaridade | None  # None = neutro, herda do comentario
+    padrao: re.Pattern[str]
+
+
+def _compilar_entradas() -> list[_Entrada]:
+    entradas: list[_Entrada] = []
+    for aspecto in ASPECTOS:
+        faixas = (
+            (aspecto.positivos, Polaridade.POSITIVA),
+            (aspecto.negativos, Polaridade.NEGATIVA),
+            (aspecto.neutros, None),
+        )
+        for termos, polaridade in faixas:
+            for termo in termos:
+                entradas.append(
+                    _Entrada(
+                        aspecto=aspecto.nome,
+                        termo=termo,
+                        polaridade_base=polaridade,
+                        padrao=re.compile(rf"\b{re.escape(termo)}\b"),
+                    )
+                )
+    entradas.sort(key=lambda entrada: len(entrada.termo), reverse=True)
+    return entradas
+
+
+_ENTRADAS = _compilar_entradas()
+
+_POLARIDADE_POR_SENTIMENTO = {
+    Sentimento.POSITIVO: Polaridade.POSITIVA,
+    Sentimento.NEGATIVO: Polaridade.NEGATIVA,
+    Sentimento.NEUTRO: Polaridade.NEUTRA,
+}
+
+_INVERSA = {
+    Polaridade.POSITIVA: Polaridade.NEGATIVA,
+    Polaridade.NEGATIVA: Polaridade.POSITIVA,
+    Polaridade.NEUTRA: Polaridade.NEUTRA,
+}
+
+
+class ExtratorAspectos:
+    versao = VERSAO_LEXICO
+
+    def extrair(self, texto: str, sentimento: Sentimento) -> list[AspectoDetectado]:
+        if not texto:
+            return []
+
+        normalizado = normalizar_para_busca(texto)
+        ocupados = [False] * len(normalizado)
+        encontrados: dict[tuple[str, Polaridade], AspectoDetectado] = {}
+
+        for entrada in _ENTRADAS:
+            for casamento in entrada.padrao.finditer(normalizado):
+                inicio, fim = casamento.span()
+                if any(ocupados[inicio:fim]):
+                    continue
+                for posicao in range(inicio, fim):
+                    ocupados[posicao] = True
+
+                polaridade = entrada.polaridade_base or _POLARIDADE_POR_SENTIMENTO[sentimento]
+                if self._tem_negacao_antes(normalizado, inicio) and not self._termo_ja_negado(
+                    entrada.termo
+                ):
+                    polaridade = _INVERSA[polaridade]
+
+                chave = (entrada.aspecto, polaridade)
+                detectado = encontrados.get(chave)
+                if detectado is None:
+                    encontrados[chave] = AspectoDetectado(
+                        aspecto=entrada.aspecto,
+                        polaridade=polaridade,
+                        ocorrencias=1,
+                        termos=[entrada.termo],
+                    )
+                else:
+                    detectado.ocorrencias += 1
+                    if entrada.termo not in detectado.termos:
+                        detectado.termos.append(entrada.termo)
+
+        return sorted(
+            encontrados.values(),
+            key=lambda a: (-a.ocorrencias, a.aspecto, a.polaridade.value),
+        )
+
+    @staticmethod
+    def _tem_negacao_antes(texto_normalizado: str, inicio: int) -> bool:
+        anteriores = texto_normalizado[:inicio].split()
+        return any(token in NEGACOES for token in anteriores[-JANELA_NEGACAO:])
+
+    @staticmethod
+    def _termo_ja_negado(termo: str) -> bool:
+        return any(token in NEGACOES for token in termo.split())
