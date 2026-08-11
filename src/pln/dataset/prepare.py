@@ -12,7 +12,6 @@ from . import clean, split as split_mod, weak_labels
 logger = obter_logger(__name__)
 
 ARQUIVO_BRUTO = "avaliacoes.jsonl"
-ARQUIVO_PROCESSADO = "exemplos.jsonl"
 ARQUIVO_AMOSTRA_REVISAO = "teste_amostra_revisao.csv"
 
 
@@ -30,7 +29,11 @@ def carregar_avaliacoes(config: Config) -> list[Avaliacao]:
     return [Avaliacao.from_dict(registro) for registro in ler_jsonl(caminho)]
 
 
-def construir_exemplos(avaliacoes: list[Avaliacao], config: Config) -> list[ExemploRotulado]:
+def construir_exemplos(
+    avaliacoes: list[Avaliacao],
+    config: Config,
+    usar_rotulos_texto: bool = False,
+) -> list[ExemploRotulado]:
     exemplos: list[ExemploRotulado] = []
     descartados = 0
 
@@ -39,14 +42,15 @@ def construir_exemplos(avaliacoes: list[Avaliacao], config: Config) -> list[Exem
         if not clean.comentario_utilizavel(texto, config.dataset.tamanho_minimo_comentario):
             descartados += 1
             continue
+        rotulo_texto = avaliacao.rotulo_sentimento if usar_rotulos_texto else None
         exemplos.append(
             ExemploRotulado(
                 avaliacao_reserva_id=avaliacao.avaliacao_reserva_id,
                 profissional_id=avaliacao.profissional_id,
                 texto=texto,
-                rotulo=weak_labels.rotulo_fraco(avaliacao.nota),
+                rotulo=rotulo_texto or weak_labels.rotulo_fraco(avaliacao.nota),
                 nota=avaliacao.nota,
-                origem_rotulo="fraco",
+                origem_rotulo=("sintetico" if rotulo_texto else "fraco"),
             )
         )
 
@@ -62,11 +66,7 @@ def preparar(config: Config, sintetico: bool = False) -> dict:
     config.caminhos.preparar()
 
     avaliacoes = carregar_avaliacoes(config)
-    exemplos = construir_exemplos(avaliacoes, config)
-    escrever_jsonl(
-        config.caminhos.dados_processados / ARQUIVO_PROCESSADO,
-        (exemplo.to_dict() for exemplo in exemplos),
-    )
+    exemplos = construir_exemplos(avaliacoes, config, usar_rotulos_texto=sintetico)
 
     particoes = split_mod.dividir(
         exemplos,
@@ -89,6 +89,9 @@ def preparar(config: Config, sintetico: bool = False) -> dict:
         "versaoLimpeza": clean.VERSAO_LIMPEZA,
         "regrasLimpeza": clean.REGRAS_LIMPEZA,
         "mapaRotuloFraco": {str(k): v.value for k, v in weak_labels.MAPA_NOTA_ROTULO.items()},
+        "rotulosSinteticosPeloTexto": sum(
+            1 for exemplo in exemplos if exemplo.origem_rotulo == "sintetico"
+        ),
         "totalAvaliacoesBrutas": len(avaliacoes),
         "totalExemplos": len(exemplos),
         "tamanhoParticoes": particoes.resumo(),

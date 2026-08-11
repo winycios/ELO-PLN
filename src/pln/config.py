@@ -65,8 +65,18 @@ class ConfigDataset:
 @dataclass(slots=True)
 class ConfigModelo:
     backend: str = "baseline"
-    versao: str = field(default_factory=lambda: _env("ELO_PLN_VERSAO_MODELO", "sentimento-ptbr-v1"))
-    confianca_minima: float = field( default_factory=lambda: _env_float("ELO_PLN_CONFIANCA_MINIMA", 0.55) )
+    versao: str = field(
+        default_factory=lambda: _env("ELO_PLN_VERSAO_MODELO", "sentimento-ptbr-v1")
+    )
+    confianca_minima: float = field(
+        default_factory=lambda: _env_float("ELO_PLN_CONFIANCA_MINIMA", 0.55)
+    )
+    minimo_aspectos_conciliacao: int = field(
+        default_factory=lambda: _env_int("ELO_PLN_MIN_ASPECTOS_CONCILIACAO", 2)
+    )
+    fator_evidencia_aspecto: float = field(
+        default_factory=lambda: _env_float("ELO_PLN_FATOR_EVIDENCIA_ASPECTO", 2.0)
+    )
 
 
 @dataclass(slots=True)

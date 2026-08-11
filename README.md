@@ -6,7 +6,7 @@ conforme `doc/contexto-implementacao-pln-recomendacoes.md`.
 O módulo faz três coisas e só três:
 
 1. **classifica o sentimento** de um comentário de avaliação (`POSITIVO`, `NEUTRO`, `NEGATIVO`);
-2. **extrai aspectos** do comentário (pontualidade, qualidade, preço…) sem nenhum modelo neural adicional;
+2. **extrai aspectos** do comentário (pontualidade, resolução, qualidade, preço…);
 3. **agrega a reputação textual** de cada profissional e monta um resumo por template.
 
 Tudo roda **localmente**, sem chamada a API externa de IA. O MySQL continua sendo a fonte de
@@ -25,8 +25,9 @@ Avaliação salva no MySQL pela API Java   (a avaliação nunca depende do PLN p
         ↓
 Worker Python encontra as pendentes      (as que ainda não têm análise para a versão do modelo)
         ↓
-Classificação de sentimento              ← único modelo neural do projeto
-Extração de aspectos (léxico)            ← sem modelo neural
+Classificação de sentimento              ← baseline TF-IDF + regressão logística
+Extração de aspectos (léxico)            ← regras locais e auditáveis
+Conciliação por evidências explícitas    ← proteção conservadora do baseline
 Regra de inconsistência nota × texto     ← só aqui a nota é usada
         ↓
 Grava avaliacao_analise_pln              (uma linha por avaliação)
@@ -46,10 +47,12 @@ perde, porque a próxima execução reencontra as avaliações sem análise.
 
 **Sentimento.** O classificador recebe **apenas o texto**. A nota nunca entra como
 característica — se entrasse, a regra de inconsistência seria circular. A primeira versão usa
-TF-IDF + regressão logística: um modelo supervisionado leve, executado localmente e suficiente
-para demonstrar a classificação automática de sentimentos. Cada análise gravada carrega a
-`versao_modelo` que a produziu, o que permite auditar e reprocessar. Um modelo neural para
-português poderá ser incorporado futuramente sem alterar esse contrato.
+TF-IDF de palavras e caracteres + regressão logística: um modelo supervisionado leve e
+executado localmente. A normalização preserva os tokens originais e acrescenta marcadores de
+escopo (`não chegou` gera `NEG_chegou`), enquanto os n-gramas de caracteres toleram parte dos
+erros de digitação. Cada análise gravada carrega a `versao_modelo` que a produziu, o que permite
+auditar e reprocessar. Uma integração neural é apenas possibilidade futura e não faz parte desta
+implementação.
 
 **Aspectos.** Um léxico controlado (`keywords/aspects.py`) casa termos sobre o texto
 normalizado (minúsculas, sem acento, sem pontuação). Regras do casamento:
@@ -62,6 +65,13 @@ normalizado (minúsculas, sem acento, sem pontuação). Regras do casamento:
   `respondeu`;
 - uma negação até 3 tokens antes inverte a polaridade (`não foi pontual`);
 - termos neutros (`preço`, `atendimento`) herdam a polaridade do sentimento do comentário.
+- falhas de solução são consolidadas em `RESOLUCAO` (`não corrigiu`, `problema continuou`).
+
+**Conciliação.** Quando pelo menos dois aspectos canônicos distintos têm polaridade explícita
+na mesma direção, não existe evidência explícita contrária e as probabilidades do classificador
+permitem a troca, essas evidências podem corrigir a classe global. Termos neutros que herdaram
+o sentimento não votam nessa etapa. A confiança retornada é recalculada sobre os escores
+combinados, em vez de reutilizar uma probabilidade incompatível com a classe corrigida.
 
 Há também extração por TF-IDF (`keywords/tfidf.py`), usada como apoio de calibração para
 descobrir aspectos ainda ausentes do léxico — ela **não** alimenta o texto exibido ao usuário,
@@ -78,6 +88,7 @@ gerariam inconsistências em massa.
 - avaliações inconsistentes entram com peso `0,3` (configurável) no sentimento médio;
 - um aspecto só vira ponto forte/fraco se aparecer em pelo menos N **avaliações distintas** —
   um comentário que repete "pontual, muito pontual" não promove o aspecto sozinho.
+- se um aspecto for selecionado como ponto forte, ele não será repetido nos pontos fracos.
 
 **Resumo.** Templates fechados (`reputation/summary.py`), sem modelo generativo. Quando não há
 evidência suficiente, o resumo sai vazio — o que não é erro: o Java simplesmente omite a linha
@@ -109,24 +120,27 @@ elo-pln worker                                                 # analisa e agreg
 elo-pln exportar-es                                            # fragmentos para o Elasticsearch
 ```
 
-> ⚠️ Os dados sintéticos vêm de templates e **superestimam** qualquer classificador. O
+> ⚠️ Os dados sintéticos vêm de templates e **superestimam** qualquer classificador. Seu
+> rótulo descreve o texto, inclusive quando a nota foi intencionalmente invertida para testar
+> inconsistência. O
 > `metadata.json` e o relatório marcam o dataset como sintético justamente para que essas
 > métricas nunca sejam reportadas como resultado do TCC.
 
 Análise avulsa, para inspeção manual:
 
 ```bash
-$ elo-pln analisar --texto "Chegou no horário, muito atencioso, mas cobrou acima do orçamento" --nota 5
+$ elo-pln analisar --texto "Não chegou no horário, e não corrigiu meu problema" --nota 1
 {
   "sentimento": "NEGATIVO",
-  "confianca": 0.6495,
-  "versaoModelo": "sentimento-ptbr-v1",
+  "confianca": 0.8158,
+  "versaoModelo": "sentimento-ptbr-v2",
+  "comentario": "Não chegou no horário, e não corrigiu meu problema",
+  "nota": 1,
   "aspectos": [
-    {"aspecto": "ATENDIMENTO",  "polaridade": "POSITIVA", "ocorrencias": 1, "termos": ["muito atencioso"]},
-    {"aspecto": "PONTUALIDADE", "polaridade": "POSITIVA", "ocorrencias": 1, "termos": ["chegou no horario"]},
-    {"aspecto": "PRECO",        "polaridade": "NEGATIVA", "ocorrencias": 1, "termos": ["acima do orcamento"]}
+    {"aspecto": "PONTUALIDADE", "polaridade": "NEGATIVA", "ocorrencias": 1, "termos": ["chegou no horario"]},
+    {"aspecto": "RESOLUCAO",    "polaridade": "NEGATIVA", "ocorrencias": 1, "termos": ["nao corrigiu meu problema"]}
   ],
-  "possuiInconsistencia": true
+  "possuiInconsistencia": false
 }
 ```
 
@@ -171,7 +185,7 @@ publica pedidos de reindexação na `search_outbox` existente.
 | `extrair` | Lê avaliações com comentário do repositório e anonimiza |
 | `preparar` | Limpa, aplica rótulo fraco e divide treino/validação/teste |
 | `exportar-revisao` / `aplicar-revisao` | Ciclo de revisão manual do conjunto de teste |
-| `treinar-baseline` | TF-IDF + regressão logística |
+| `treinar-baseline` | TF-IDF de palavras/caracteres + regressão logística |
 | `avaliar` | Métricas + relatório Markdown/JSON em `reports` |
 | `analisar` | Analisa um comentário avulso |
 | `worker` | Processa pendentes, agrega reputação, marca reindexação |
@@ -186,12 +200,15 @@ regras.
 
 | Variável | Padrão | Para que serve |
 | --- | --- | --- |
-| `ELO_PLN_VERSAO_MODELO` | `sentimento-ptbr-v1` | Versão gravada em cada análise |
+| `ELO_PLN_VERSAO_MODELO` | `sentimento-ptbr-v2` | Versão gravada em cada análise |
+| `ELO_PLN_VERSAO_DATASET` | `v2` | Versão do conjunto preparado |
 | `ELO_PLN_SEED` | `42` | Reprodutibilidade (split e treino) |
 | `ELO_PLN_REPOSITORIO` | `jsonl` | `jsonl` (offline) ou `mysql` |
 | `ELO_PLN_LOTE` | `200` | Tamanho do lote do worker |
 | `ELO_PLN_INTERVALO` | `60` | Segundos entre rodadas no modo `--contínuo` |
 | `ELO_PLN_CONFIANCA_MINIMA` | `0.55` | Piso para marcar inconsistência |
+| `ELO_PLN_MIN_ASPECTOS_CONCILIACAO` | `2` | Aspectos explícitos distintos exigidos para corrigir a classe |
+| `ELO_PLN_FATOR_EVIDENCIA_ASPECTO` | `2.0` | Multiplicador por aspecto explícito concordante |
 | `ELO_PLN_PESO_INCONSISTENTE` | `0.3` | Peso de uma avaliação inconsistente na reputação |
 | `ELO_PLN_MIN_OCORRENCIAS_ASPECTO` | `2` | Avaliações distintas para um aspecto virar ponto forte |
 | `ELO_PLN_MIN_COMENTARIOS_RESUMO` | `3` | Mínimo de comentários para exibir resumo textual |
@@ -237,8 +254,7 @@ O módulo cria duas tabelas derivadas e integra-se à outbox existente (`reposit
 
 ## 9. Integração com Java e Elasticsearch
 
-`reputation/es_document.py` é o contrato de handoff: define o objeto `reputacaoPln` e o mapping
-correspondente. O Python **não escreve** no Elasticsearch — quem indexa é o Java.
+`reputation/es_document.py` é o contrato de handoff: define o objeto `reputacaoPln` e o mapping correspondente.
 
 ```json
 {
@@ -257,20 +273,6 @@ correspondente. O Python **não escreve** no Elasticsearch — quem indexa é o 
   }
 }
 ```
-
-Pontos de atenção do lado Java:
-
-- o índice atual é `dynamic: strict` → é preciso **nova versão do índice, reindexação e troca
-  de alias**, com rollback possível;
-- `pontosFortes` vem em forma canônica (`PONTUALIDADE`); o rótulo do card (`Pontualidade`) sai
-  de `keywords.rotulo_amigavel`;
-- `taxaInconsistencia` pode ser indexada para ranqueamento, mas **não deve ir ao contrato de
-  resposta do aplicativo**;
-- `metricasRecomendacao` (taxa de resposta, demanda dos últimos 30 dias) não vem daqui: são
-  métricas quantitativas de responsabilidade do Java;
-- o carrossel **"Em alta na sua região" não pode consumir nada deste módulo** — ele é
-  quantitativo, sem personalização e sem PLN, e precisa continuar funcionando mesmo com o
-  módulo Python fora do ar.
 
 ## 10. Avaliação e reprodutibilidade
 
@@ -301,22 +303,11 @@ Cuidados já embutidos no pipeline:
 - `data`, `models` e `reports` estão no `.gitignore` — dados reais e artefatos grandes não
   são versionados.
 
-## 12. Testes
-
-```bash
-cd pln && pytest -q
-```
-
-52 testes cobrindo limpeza e anonimização, rótulo fraco, determinismo e vazamento do split,
-léxico de aspectos (negação, expressões compostas, herança de polaridade), regra de
-inconsistência, agregação (peso reduzido, evidência mínima), resumo por template, contrato do
-documento do Elasticsearch, resiliência do worker e o pipeline offline completo
-(dados → baseline → avaliação → worker → fragmento do ES).
-
-## 13. Estado atual e o que falta
+## 12. Estado atual e o que falta
 
 **Implementado (Fases 1 a 4 do documento, escopo Python da seção 6.1):** preparação de dataset,
-classificador TF-IDF + regressão logística, avaliação, inferência local, extração de aspectos, regra de
+classificador TF-IDF de palavras/caracteres + regressão logística, avaliação, inferência local,
+extração de aspectos, conciliação por evidências explícitas, regra de
 inconsistência, resumo por template, agregação de reputação, worker, persistência (MySQL e
 offline) e o contrato do documento do Elasticsearch.
 
@@ -330,5 +321,5 @@ reais antes do treinamento definitivo: volume de comentários disponível, distr
 hardware para treino, janela de popularidade regional, limiares e prioridade dos selos, forma final de
 persistência das palavras-chave e nome/versionamento do novo índice.
 
-Um modelo neural pré-treinado para português, como o BERTimbau, permanece fora do escopo inicial
-e poderá ser avaliado como evolução futura, preservando o mesmo contrato de inferência.
+Uma integração com modelo neural permanece somente como possibilidade futura documentada e não
+faz parte do escopo implementado.

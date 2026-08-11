@@ -22,8 +22,9 @@ def _aspectos_por_polaridade(
     polaridade: Polaridade,
     minimo_avaliacoes: int,
     maximo: int,
+    excluidos: set[str] | None = None,
 ) -> list[str]:
-
+    excluidos = excluidos or set()
     avaliacoes_por_aspecto: dict[str, set[int]] = defaultdict(set)
     ocorrencias_por_aspecto: dict[str, int] = defaultdict(int)
 
@@ -36,7 +37,7 @@ def _aspectos_por_polaridade(
     elegiveis = [
         (nome, len(avaliacoes), ocorrencias_por_aspecto[nome])
         for nome, avaliacoes in avaliacoes_por_aspecto.items()
-        if len(avaliacoes) >= minimo_avaliacoes
+        if len(avaliacoes) >= minimo_avaliacoes and nome not in excluidos
     ]
     elegiveis.sort(key=lambda item: (-item[1], -item[2], item[0]))
     return [nome for nome, _, _ in elegiveis[:maximo]]
@@ -76,6 +77,7 @@ def agregar_reputacao(
         Polaridade.NEGATIVA,
         config.minimo_ocorrencias_aspecto,
         config.maximo_pontos_fortes,
+        excluidos=set(pontos_fortes),
     )
 
     percentual_positivo = _percentual(contagem[Sentimento.POSITIVO], total)

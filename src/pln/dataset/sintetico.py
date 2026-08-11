@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 
-from ..schemas import Avaliacao
+from ..schemas import Avaliacao, Sentimento
 
 _POSITIVOS = [
     "Chegou no horário e realizou um ótimo trabalho",
@@ -45,10 +45,20 @@ _NEGATIVOS = [
     "Não cumpriu o prazo prometido",
 ]
 
-_SUFIXOS = ["", " Obrigado!", " Recomendo.", " Não recomendo.", " ...", "!!!"]
+_SUFIXOS = {
+    Sentimento.POSITIVO: ("", " Obrigado!", " Recomendo.", "!!!"),
+    Sentimento.NEUTRO: ("", " ..."),
+    Sentimento.NEGATIVO: ("", " Não recomendo.", " ...", "!!!"),
+}
 
 
-def gerar_avaliacoes(quantidade: int = 600,quantidade_profissionais: int = 30,seed: int = 42,proporcao_sem_comentario: float = 0.15,proporcao_inconsistente: float = 0.05) -> list[Avaliacao]:
+def gerar_avaliacoes(
+    quantidade: int = 600,
+    quantidade_profissionais: int = 30,
+    seed: int = 42,
+    proporcao_sem_comentario: float = 0.15,
+    proporcao_inconsistente: float = 0.05,
+) -> list[Avaliacao]:
     aleatorio = random.Random(seed)
     avaliacoes: list[Avaliacao] = []
 
@@ -56,19 +66,31 @@ def gerar_avaliacoes(quantidade: int = 600,quantidade_profissionais: int = 30,se
         profissional_id = aleatorio.randint(1, quantidade_profissionais)
         sorteio = aleatorio.random()
         if sorteio < 0.65:
-            nota, corpus = aleatorio.choice([4, 5]), _POSITIVOS
+            nota, corpus, rotulo_texto = (
+                aleatorio.choice([4, 5]),
+                _POSITIVOS,
+                Sentimento.POSITIVO,
+            )
         elif sorteio < 0.85:
-            nota, corpus = 3, _NEUTROS
+            nota, corpus, rotulo_texto = 3, _NEUTROS, Sentimento.NEUTRO
         else:
-            nota, corpus = aleatorio.choice([1, 2]), _NEGATIVOS
+            nota, corpus, rotulo_texto = (
+                aleatorio.choice([1, 2]),
+                _NEGATIVOS,
+                Sentimento.NEGATIVO,
+            )
 
-        comentario: str | None = aleatorio.choice(corpus) + aleatorio.choice(_SUFIXOS)
+        comentario: str | None = aleatorio.choice(corpus) + aleatorio.choice(
+            _SUFIXOS[rotulo_texto]
+        )
 
         if aleatorio.random() < proporcao_inconsistente:
             if nota >= 4:
                 comentario = aleatorio.choice(_NEGATIVOS)
+                rotulo_texto = Sentimento.NEGATIVO
             elif nota <= 2:
                 comentario = aleatorio.choice(_POSITIVOS)
+                rotulo_texto = Sentimento.POSITIVO
 
         if aleatorio.random() < proporcao_sem_comentario:
             comentario = aleatorio.choice([None, "", "   "])
@@ -79,7 +101,11 @@ def gerar_avaliacoes(quantidade: int = 600,quantidade_profissionais: int = 30,se
                 profissional_id=profissional_id,
                 nota=nota,
                 comentario=comentario,
-                data_avaliacao=f"2026-0{aleatorio.randint(1, 8)}-{aleatorio.randint(10, 28)}T10:00:00",
+                data_avaliacao=(
+                    f"2026-0{aleatorio.randint(1, 8)}-"
+                    f"{aleatorio.randint(10, 28)}T10:00:00"
+                ),
+                rotulo_sentimento=rotulo_texto,
             )
         )
 

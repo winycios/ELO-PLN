@@ -45,13 +45,19 @@ class Avaliacao:
     nota: int
     comentario: str | None = None
     data_avaliacao: str | None = None
+    rotulo_sentimento: Sentimento | None = None
 
     @property
     def tem_comentario(self) -> bool:
         return bool(self.comentario and self.comentario.strip())
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        dados = asdict(self)
+        if self.rotulo_sentimento is None:
+            dados.pop("rotulo_sentimento")
+        else:
+            dados["rotulo_sentimento"] = self.rotulo_sentimento.value
+        return dados
 
     @classmethod
     def from_dict(cls, dados: dict[str, Any]) -> "Avaliacao":
@@ -61,6 +67,11 @@ class Avaliacao:
             nota=int(dados["nota"]),
             comentario=dados.get("comentario"),
             data_avaliacao=dados.get("data_avaliacao"),
+            rotulo_sentimento=(
+                Sentimento(dados["rotulo_sentimento"])
+                if dados.get("rotulo_sentimento")
+                else None
+            ),
         )
 
 
@@ -141,6 +152,8 @@ class AnaliseComentario:
     confianca: float
     possui_inconsistencia: bool
     versao_modelo: str
+    comentario: str = ""
+    nota: int | None = None
     aspectos: list[AspectoDetectado] = field(default_factory=list)
     data_processamento: str = field(default_factory=agora_iso)
 
@@ -152,6 +165,8 @@ class AnaliseComentario:
             "confianca": round(self.confianca, 4),
             "possui_inconsistencia": self.possui_inconsistencia,
             "versao_modelo": self.versao_modelo,
+            "comentario": self.comentario,
+            "nota": self.nota,
             "aspectos": [a.to_dict() for a in self.aspectos],
             "data_processamento": self.data_processamento,
         }
@@ -165,6 +180,8 @@ class AnaliseComentario:
             confianca=float(dados["confianca"]),
             possui_inconsistencia=bool(dados["possui_inconsistencia"]),
             versao_modelo=dados["versao_modelo"],
+            comentario=dados.get("comentario", ""),
+            nota=int(dados["nota"]) if dados.get("nota") is not None else None,
             aspectos=[AspectoDetectado.from_dict(a) for a in dados.get("aspectos", [])],
             data_processamento=dados.get("data_processamento", agora_iso()),
         )

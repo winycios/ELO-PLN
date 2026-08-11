@@ -133,7 +133,7 @@ Patrícia
 
 ### 5.1. Classificador de sentimento da primeira versão
 
-A primeira versão utilizará TF-IDF e regressão logística para produzir um classificador de sentimento com a seguinte entrada e saída:
+A versão implementada utiliza TF-IDF de palavras e caracteres com regressão logística. Marcadores locais de negação diferenciam expressões como `chegou` e `não chegou`, mantendo a inferência local e o contrato abaixo:
 
 Entrada:
 
@@ -165,6 +165,8 @@ Se não existir volume suficiente de comentários rotulados manualmente, as nota
 
 Essa associação é uma aproximação e não deverá ser utilizada como única avaliação da qualidade do modelo. Um conjunto de teste separado deverá ser revisado manualmente.
 
+Nos dados sintéticos, o rótulo de sentimento deverá vir do template textual, e não da nota. Isso permite gerar nota e texto propositalmente inconsistentes sem ensinar ao classificador um rótulo semanticamente invertido.
+
 Comentários ausentes ou vazios não serão enviados ao modelo.
 
 ### 5.3. Palavras-chave
@@ -186,6 +188,7 @@ Exemplos de aspectos úteis:
 - preço;
 - atraso;
 - comunicação.
+- resolução do problema.
 
 Sinônimos deverão ser consolidados em um aspecto canônico quando necessário. Por exemplo, `pontual`, `pontualidade` e `chegou no horário` poderão contribuir para o aspecto `PONTUALIDADE`.
 
@@ -480,9 +483,10 @@ O segundo grupo não deverá conter justificativa personalizada nem campos deriv
 
 ### 12.1. Classificador adotado
 
-A primeira versão utilizará um classificador supervisionado simples e executável localmente:
+A versão implementada utiliza um classificador supervisionado simples e executável localmente:
 
-- TF-IDF;
+- união de TF-IDF de palavras (unigramas e bigramas) e caracteres;
+- marcadores locais de escopo de negação;
 - regressão logística ou classificador linear equivalente.
 
 Essa abordagem atende ao objetivo de demonstrar a classificação automática de sentimentos sem adicionar a complexidade operacional de um modelo neural. O BERTimbau poderá ser avaliado futuramente caso surjam volume de dados, infraestrutura e necessidade de maior compreensão contextual.

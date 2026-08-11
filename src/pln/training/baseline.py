@@ -8,17 +8,18 @@ from ..dataset.prepare import carregar_split
 from ..io_utils import escrever_json, ler_json
 from ..logging_utils import obter_logger
 from ..schemas import CLASSES_STR, ExemploRotulado
-from ..texto import normalizar_para_busca
+from ..texto import normalizar_para_busca, normalizar_para_modelo
 from .metadata import montar_metadados
 
 logger = obter_logger(__name__)
 
 HIPERPARAMETROS = {
-    "vetorizador": "TfidfVectorizer",
-    "ngram_range": [1, 2],
+    "vetorizador": "FeatureUnion(TF-IDF palavras + caracteres)",
+    "word_ngram_range": [1, 2],
+    "char_ngram_range": [3, 5],
     "min_df": 2,
     "sublinear_tf": True,
-    "analyzer": "word",
+    "analyzers": {"palavras": "word", "caracteres": "char_wb"},
     "classificador": "LogisticRegression",
     "C": 4.0,
     "max_iter": 1000,
@@ -30,17 +31,34 @@ HIPERPARAMETROS = {
 def _construir_pipeline(seed: int):
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.linear_model import LogisticRegression
-    from sklearn.pipeline import Pipeline
+    from sklearn.pipeline import FeatureUnion, Pipeline
 
     return Pipeline(
         steps=[
             (
-                "tfidf",
-                TfidfVectorizer(
-                    preprocessor=normalizar_para_busca,
-                    ngram_range=tuple(HIPERPARAMETROS["ngram_range"]),
-                    min_df=HIPERPARAMETROS["min_df"],
-                    sublinear_tf=HIPERPARAMETROS["sublinear_tf"],
+                "features",
+                FeatureUnion(
+                    transformer_list=[
+                        (
+                            "palavras",
+                            TfidfVectorizer(
+                                preprocessor=normalizar_para_modelo,
+                                ngram_range=tuple(HIPERPARAMETROS["word_ngram_range"]),
+                                min_df=HIPERPARAMETROS["min_df"],
+                                sublinear_tf=HIPERPARAMETROS["sublinear_tf"],
+                            ),
+                        ),
+                        (
+                            "caracteres",
+                            TfidfVectorizer(
+                                preprocessor=normalizar_para_busca,
+                                analyzer="char_wb",
+                                ngram_range=tuple(HIPERPARAMETROS["char_ngram_range"]),
+                                min_df=HIPERPARAMETROS["min_df"],
+                                sublinear_tf=HIPERPARAMETROS["sublinear_tf"],
+                            ),
+                        ),
+                    ]
                 ),
             ),
             (
@@ -91,14 +109,17 @@ def treinar(config: Config) -> dict:
     metadados = montar_metadados(
         config=config,
         backend="baseline",
-        modelo_base="tfidf+logistic-regression",
+        modelo_base="tfidf-word-char+logistic-regression",
         hiperparametros=HIPERPARAMETROS,
         metricas_validacao=metricas_validacao,
         metadados_dataset=ler_json(caminho_meta_dataset) if caminho_meta_dataset.exists() else {},
         extras={
             "python": sys.version.split()[0],
             "plataforma": platform.platform(),
-            "vocabulario": len(pipeline.named_steps["tfidf"].vocabulary_),
+            "vocabulario": sum(
+                len(transformador.vocabulary_)
+                for _, transformador in pipeline.named_steps["features"].transformer_list
+            ),
         },
     )
     escrever_json(diretorio / "metadata.json", metadados)

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 
 from ..schemas import AspectoDetectado, Polaridade, Sentimento
-from ..texto import normalizar_para_busca
+from ..texto import MARCADOR_LIMITE_ORACAO, normalizar_para_busca_com_limites
 from .aspects import ASPECTOS, JANELA_NEGACAO, NEGACOES, VERSAO_LEXICO
 
 
@@ -57,12 +58,24 @@ class ExtratorAspectos:
     versao = VERSAO_LEXICO
 
     def extrair(self, texto: str, sentimento: Sentimento) -> list[AspectoDetectado]:
-        if not texto:
-            return []
+        aspectos, _ = self.extrair_com_evidencias(texto, sentimento)
+        return aspectos
 
-        normalizado = normalizar_para_busca(texto)
+    def extrair_com_evidencias(
+        self, texto: str, sentimento: Sentimento
+    ) -> tuple[list[AspectoDetectado], dict[Polaridade, set[str]]]:
+        """Extrai aspectos e separa evidencias cuja polaridade e explicita.
+
+        Termos neutros que herdam o sentimento do comentario continuam no
+        contrato de aspectos, mas nao podem votar na conciliacao do sentimento.
+        """
+        if not texto:
+            return [], {}
+
+        normalizado = normalizar_para_busca_com_limites(texto)
         ocupados = [False] * len(normalizado)
         encontrados: dict[tuple[str, Polaridade], AspectoDetectado] = {}
+        evidencias: dict[Polaridade, set[str]] = defaultdict(set)
 
         for entrada in _ENTRADAS:
             for casamento in entrada.padrao.finditer(normalizado):
@@ -73,10 +86,15 @@ class ExtratorAspectos:
                     ocupados[posicao] = True
 
                 polaridade = entrada.polaridade_base or _POLARIDADE_POR_SENTIMENTO[sentimento]
-                if self._tem_negacao_antes(normalizado, inicio) and not self._termo_ja_negado(
-                    entrada.termo
+                if (
+                    entrada.polaridade_base is not None
+                    and self._tem_negacao_antes(normalizado, inicio)
+                    and not self._termo_ja_negado(entrada.termo)
                 ):
                     polaridade = _INVERSA[polaridade]
+
+                if entrada.polaridade_base is not None:
+                    evidencias[polaridade].add(entrada.aspecto)
 
                 chave = (entrada.aspecto, polaridade)
                 detectado = encontrados.get(chave)
@@ -92,15 +110,28 @@ class ExtratorAspectos:
                     if entrada.termo not in detectado.termos:
                         detectado.termos.append(entrada.termo)
 
-        return sorted(
-            encontrados.values(),
-            key=lambda a: (-a.ocorrencias, a.aspecto, a.polaridade.value),
+        return (
+            sorted(
+                encontrados.values(),
+                key=lambda a: (-a.ocorrencias, a.aspecto, a.polaridade.value),
+            ),
+            dict(evidencias),
         )
 
     @staticmethod
     def _tem_negacao_antes(texto_normalizado: str, inicio: int) -> bool:
         anteriores = texto_normalizado[:inicio].split()
-        return any(token in NEGACOES for token in anteriores[-JANELA_NEGACAO:])
+        ultimo_limite = -1
+        for indice, token in enumerate(anteriores):
+            if token == MARCADOR_LIMITE_ORACAO or token in {
+                "mas",
+                "porem",
+                "contudo",
+                "todavia",
+            }:
+                ultimo_limite = indice
+        escopo = anteriores[ultimo_limite + 1 :]
+        return any(token in NEGACOES for token in escopo[-JANELA_NEGACAO:])
 
     @staticmethod
     def _termo_ja_negado(termo: str) -> bool:
