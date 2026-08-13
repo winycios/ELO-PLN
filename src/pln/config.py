@@ -71,6 +71,9 @@ class ConfigModelo:
     confianca_minima: float = field(
         default_factory=lambda: _env_float("ELO_PLN_CONFIANCA_MINIMA", 0.55)
     )
+    confianca_revisao: float = field(
+        default_factory=lambda: _env_float("ELO_PLN_CONFIANCA_REVISAO", 0.70)
+    )
     minimo_aspectos_conciliacao: int = field(
         default_factory=lambda: _env_int("ELO_PLN_MIN_ASPECTOS_CONCILIACAO", 2)
     )

@@ -64,13 +64,15 @@ def cmd_avaliar(args, config: Config) -> int:
     from .inference.factory import carregar_classificador
 
     classificador = carregar_classificador(config)
-    resultado = gerar_relatorio(config, classificador, split=args.split)
+    resultado = gerar_relatorio(config, classificador, split=args.split, confianca_revisao=args.limiar_revisao)
     _imprimir(
         {
             "backend": resultado["backend"],
             "split": resultado["split"],
             "macroF1": resultado["metricas"]["macroF1"],
             "acuracia": resultado["metricas"]["acuracia"],
+            "casosRevisao": resultado["casosRevisao"],
+            "arquivoRevisao": resultado["arquivoRevisao"],
             "relatorio": str(config.caminhos.relatorios),
         }
     )
@@ -211,6 +213,13 @@ def construir_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("avaliar", help="Avalia o backend atual e gera relatorio.")
     p.add_argument("--split", default="teste", choices=["treino", "validacao", "teste"])
+    p.add_argument(
+        "--limiar-revisao",
+        type=float,
+        default=None,
+        dest="limiar_revisao",
+        help="Piso da faixa ALTA de confianca. Abaixo dele o caso vai para o arquivo ""de revisao manual (padrao: ELO_PLN_CONFIANCA_REVISAO ou 0.70).",
+    )
     p.set_defaults(func=cmd_avaliar)
 
     p = sub.add_parser("analisar", help="Analisa um comentario avulso.")
