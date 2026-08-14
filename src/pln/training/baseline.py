@@ -8,7 +8,7 @@ from ..dataset.prepare import carregar_split
 from ..io_utils import escrever_json, ler_json
 from ..logging_utils import obter_logger
 from ..schemas import CLASSES_STR, ExemploRotulado
-from ..texto import normalizar_para_busca, normalizar_para_modelo
+from ..texto import PALAVRAS_DESCARTAVEIS, normalizar_para_busca, normalizar_para_modelo
 from .metadata import montar_metadados
 
 logger = obter_logger(__name__)
@@ -20,6 +20,7 @@ HIPERPARAMETROS = {
     "min_df": 2,
     "sublinear_tf": True,
     "analyzers": {"palavras": "word", "caracteres": "char_wb"},
+    "stop_words_palavras": "texto.PALAVRAS_DESCARTAVEIS",
     "classificador": "LogisticRegression",
     "C": 4.0,
     "max_iter": 1000,
@@ -43,6 +44,9 @@ def _construir_pipeline(seed: int):
                             "palavras",
                             TfidfVectorizer(
                                 preprocessor=normalizar_para_modelo,
+                                 # Sem isto, um comentario cujo conteudo o treino
+                                # nao viu passa a ser decidido por `um` e `foi`.
+                                stop_words=sorted(PALAVRAS_DESCARTAVEIS),
                                 ngram_range=tuple(HIPERPARAMETROS["word_ngram_range"]),
                                 min_df=HIPERPARAMETROS["min_df"],
                                 sublinear_tf=HIPERPARAMETROS["sublinear_tf"],

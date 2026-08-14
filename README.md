@@ -54,6 +54,19 @@ erros de digitação. Cada análise gravada carrega a `versao_modelo` que a prod
 auditar e reprocessar. Uma integração neural é apenas possibilidade futura e não faz parte desta
 implementação.
 
+O escopo da negação (`texto.py`) segue quatro regras, e o léxico de aspectos usa exatamente as
+mesmas — são uma função compartilhada, não duas cópias:
+
+- **expressões fixas** viram um token só (`nunca mais` → `nunca_mais`). O negador ali não nega o
+  que vem depois: `nunca mais contrato` é rejeição enfática, e marcar `NEG_contrato` empurrava a
+  frase para NEUTRO;
+- **intensificadores** (`muito`, `mais`, `demais`) são atravessados sem gastar a janela, para que
+  `não muito caprichoso` gere `NEG_caprichoso`;
+- **palavras funcionais** também são atravessadas, para que `não fez o que foi combinado` alcance
+  `combinado` em vez de parar em `o que foi`;
+- **`e`, `ou` e as adversativas encerram o escopo**: em `não resolveu e ainda cobrou a mais` há
+  duas queixas independentes, e a negação não se distribui para a segunda.
+
 **Aspectos.** Um léxico controlado (`keywords/aspects.py`) casa termos sobre o texto
 normalizado (minúsculas, sem acento, sem pontuação). Regras do casamento:
 
@@ -63,7 +76,8 @@ normalizado (minúsculas, sem acento, sem pontuação). Regras do casamento:
   dimensão, sinal invertido, para não aparecer duas vezes no resumo;
 - expressões longas vencem palavras contidas nelas — `não respondeu` não conta também como
   `respondeu`;
-- uma negação até 3 tokens antes inverte a polaridade (`não foi pontual`);
+- uma negação até 3 palavras de conteúdo antes inverte a polaridade (`não foi pontual`),
+  seguindo a mesma política de escopo do classificador descrita acima;
 - termos neutros (`preço`, `atendimento`) herdam a polaridade do sentimento do comentário.
 - falhas de solução são consolidadas em `RESOLUCAO` (`não corrigiu`, `problema continuou`).
 
@@ -112,13 +126,28 @@ O modo offline usa arquivos JSONL em `data` no lugar do MySQL e dados sintético
 avaliações reais. Serve para exercitar todo o pipeline antes de existir volume real:
 
 ```bash
-elo-pln gerar-sinteticos --quantidade 800 --profissionais 25   # popula data/raw/
+elo-pln gerar-sinteticos --quantidade 1000 --profissionais 30  # popula data/raw/
 elo-pln preparar --sintetico                                   # limpa, rotula, divide
 elo-pln treinar-baseline                                       # models/sentimento-ptbr-v1-baseline/
 elo-pln avaliar --split teste                                  # reports/*.md e *.json
 elo-pln worker                                                 # analisa e agrega reputação
 elo-pln exportar-es                                            # fragmentos para o Elasticsearch
 ```
+
+A distribuição das classes é parametrizada, para reproduzir a da plataforma assim que ela for
+conhecida (o padrão é menos desbalanceado de propósito — com 15% de negativos o split de teste
+ficava com suporte baixo demais para a F1 de `NEGATIVO` significar alguma coisa):
+
+```bash
+elo-pln gerar-sinteticos --proporcao-positivo 0.65 --proporcao-neutro 0.20
+```
+
+O catálogo (`dataset/sintetico.py`) é organizado por **eixo** — pontualidade, preço, qualidade… —
+e cada eixo traz as três polaridades usando o mesmo vocabulário. Isso é proposital: quando `preço`
+só aparecia em frases positivas e `qualidade` só em negativas, o baseline aprendia a palavra em
+vez do contexto e a acurácia media memorização de molde. `conferir_sobreposicao()` falha o build
+se algum pivô voltar a viver numa classe só, e `tests/test_sintetico_catalogo.py` trava o tamanho
+mínimo do catálogo.
 
 > ⚠️ Os dados sintéticos vêm de templates e **superestimam** qualquer classificador. Seu
 > rótulo descreve o texto, inclusive quando a nota foi intencionalmente invertida para testar
@@ -181,10 +210,10 @@ publica pedidos de reindexação na `search_outbox` existente.
 
 | Comando | O que faz |
 | --- | --- |
-| `gerar-sinteticos` | Popula `data/raw` com avaliações sintéticas (modo offline) |
+| `gerar-sinteticos` | Popula `data/raw` com avaliações sintéticas (`--proporcao-positivo`/`--proporcao-neutro` ajustam a distribuição) |
 | `extrair` | Lê avaliações com comentário do repositório e anonimiza |
 | `preparar` | Limpa, aplica rótulo fraco e divide treino/validação/teste |
-| `exportar-revisao` / `aplicar-revisao` | Ciclo de revisão manual do conjunto de teste |
+| `exportar-revisao` / `aplicar-revisao` | Ciclo de revisão manual do teste (amostra estratificada + concordância nota × humano) |
 | `treinar-baseline` | TF-IDF de palavras/caracteres + regressão logística |
 | `avaliar` | Métricas + relatório Markdown/JSON em `reports` |
 | `analisar` | Analisa um comentário avulso |
@@ -200,8 +229,8 @@ regras.
 
 | Variável | Padrão | Para que serve |
 | --- | --- | --- |
-| `ELO_PLN_VERSAO_MODELO` | `sentimento-ptbr-v2` | Versão gravada em cada análise |
-| `ELO_PLN_VERSAO_DATASET` | `v2` | Versão do conjunto preparado |
+| `ELO_PLN_VERSAO_MODELO` | `sentimento-ptbr-v1` | Versão gravada em cada análise |
+| `ELO_PLN_VERSAO_DATASET` | `v1` | Versão do conjunto preparado |
 | `ELO_PLN_SEED` | `42` | Reprodutibilidade (split e treino) |
 | `ELO_PLN_REPOSITORIO` | `jsonl` | `jsonl` (offline) ou `mysql` |
 | `ELO_PLN_LOTE` | `200` | Tamanho do lote do worker |
@@ -285,6 +314,15 @@ Todo artefato treinado carrega um `metadata.json` ao lado dos pesos, com versão
 regras de limpeza, seed, modelo-base, hiperparâmetros, métricas de validação, versão do léxico
 de aspectos e versões das dependências. Se o artefato for copiado para outra máquina, o rastro
 vai junto.
+
+O relatório traz ainda uma seção de **cobertura léxica**, que separa a acurácia dos exemplos cujo
+vocabulário o treino já viu da acurácia dos exemplos com pelo menos uma palavra inédita:
+
+```
+| Grupo                              | Casos | Erros | Acuracia |
+| Só vocabulario visto no treino     |    77 |    11 |   0.8571 |
+| Com ao menos uma palavra inedita   |    45 |    10 |   0.7778 |
+```
 
 Cuidados já embutidos no pipeline:
 

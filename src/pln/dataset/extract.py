@@ -33,14 +33,18 @@ def extrair(config: Config, limite: int | None = None) -> int:
     return total
 
 
-def gerar_sinteticas(
-    config: Config, quantidade: int = 600, quantidade_profissionais: int = 30
-) -> int:
+def gerar_sinteticas(config: Config, quantidade: int = 600, quantidade_profissionais: int = 30, proporcao_positivo: float = 0.50, proporcao_neutro: float = 0.25, ) -> int:
     from ..repository.jsonl_repo import JsonlRepositorio
-    from .sintetico import gerar_avaliacoes
+    from .sintetico import conferir_sobreposicao, gerar_avaliacoes
 
     config.caminhos.preparar()
-    avaliacoes = gerar_avaliacoes(quantidade=quantidade,quantidade_profissionais=quantidade_profissionais,seed=config.dataset.seed)
+    avaliacoes = gerar_avaliacoes(
+        quantidade=quantidade,
+        quantidade_profissionais=quantidade_profissionais,
+        seed=config.dataset.seed,
+        proporcao_positivo=proporcao_positivo,
+        proporcao_neutro=proporcao_neutro,
+    )
     total = JsonlRepositorio(config).gravar_avaliacoes(avaliacoes)
     logger.warning(
         "Geradas %d avaliacoes SINTETICAS. Servem para exercitar o pipeline, "

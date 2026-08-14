@@ -17,7 +17,7 @@ def _imprimir(dados) -> None:
 def cmd_gerar_sinteticos(args, config: Config) -> int:
     from .dataset.extract import gerar_sinteticas
 
-    total = gerar_sinteticas(config, args.quantidade, args.profissionais)
+    total = gerar_sinteticas(config, args.quantidade, args.profissionais, args.proporcao_positivo, args.proporcao_neutro, )
     _imprimir({"avaliacoesGeradas": total, "sintetico": True})
     return 0
 
@@ -71,6 +71,7 @@ def cmd_avaliar(args, config: Config) -> int:
             "split": resultado["split"],
             "macroF1": resultado["metricas"]["macroF1"],
             "acuracia": resultado["metricas"]["acuracia"],
+            "coberturaLexical": resultado["coberturaLexical"],
             "casosRevisao": resultado["casosRevisao"],
             "arquivoRevisao": resultado["arquivoRevisao"],
             "relatorio": str(config.caminhos.relatorios),
@@ -190,6 +191,10 @@ def construir_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("gerar-sinteticos", help="Cria avaliacoes sinteticas (modo offline).")
     p.add_argument("--quantidade", type=int, default=600)
     p.add_argument("--profissionais", type=int, default=30)
+    p.add_argument("--proporcao-positivo", type=float, default=0.50, dest="proporcao_positivo",
+                   help="Fatia de avaliacoes positivas. Ajuste para reproduzir a distribuicao real.")
+    p.add_argument("--proporcao-neutro", type=float, default=0.25, dest="proporcao_neutro",
+                   help="Fatia de neutras; o restante vira negativa.")
     p.set_defaults(func=cmd_gerar_sinteticos)
 
     p = sub.add_parser("extrair", help="Extrai avaliacoes com comentario do repositorio.")

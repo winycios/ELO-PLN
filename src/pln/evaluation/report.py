@@ -6,6 +6,7 @@ from ..inference.base import ClassificadorSentimento
 from ..io_utils import escrever_json, escrever_jsonl, ler_json
 from ..logging_utils import obter_logger
 from ..schemas import ExemploRotulado
+from ..texto import tokenizar
 from .metrics import calcular_metricas, formatar_metricas
 
 logger = obter_logger(__name__)
@@ -69,6 +70,120 @@ def resumir_confianca(casos: list[dict]) -> dict:
     return resumo
 
 
+def cobertura_lexical(config: Config, casos: list[dict], split: str) -> dict | None:
+    """Compara o vocabulario do split avaliado com o que o treino viu.
+
+    Diagnostico do modo de falha mais caro deste pipeline: com um catalogo de
+    frases pequeno, o split de teste recebe moldes inteiros cujo vocabulario o
+    modelo nunca viu, e a acuracia passa a medir memorizacao. Separar a acuracia
+    dos exemplos com e sem palavra nova torna isso visivel no relatorio.
+    """
+    if split == "treino":
+        return None
+    try:
+        treino = carregar_split(config, "treino")
+    except FileNotFoundError:
+        return None
+    if not treino:
+        return None
+
+    vocabulario_treino = {palavra for item in treino for palavra in tokenizar(item.texto)}
+
+    com_novidade: list[dict] = []
+    sem_novidade: list[dict] = []
+    taxas: list[float] = []
+    for caso in casos:
+        palavras = tokenizar(caso["texto"])
+        if not palavras:
+            continue
+        novas = [palavra for palavra in palavras if palavra not in vocabulario_treino]
+        taxas.append(len(novas) / len(palavras))
+        (com_novidade if novas else sem_novidade).append(caso)
+
+    def _bloco(grupo: list[dict]) -> dict:
+        acertos = sum(1 for caso in grupo if caso["acertou"])
+        return {
+            "casos": len(grupo),
+            "acertos": acertos,
+            "erros": len(grupo) - acertos,
+            "acuracia": round(acertos / len(grupo), 4) if grupo else None,
+        }
+
+    avaliados = len(com_novidade) + len(sem_novidade)
+    return {
+        "vocabularioTreino": len(vocabulario_treino),
+        "exemplosAvaliados": avaliados,
+        "percentualComPalavraNova": (
+            round(100.0 * len(com_novidade) / avaliados, 2) if avaliados else 0.0
+        ),
+        "taxaMediaPalavrasNovas": (
+            round(sum(taxas) / len(taxas), 4) if taxas else 0.0
+        ),
+        "semPalavraNova": _bloco(sem_novidade),
+        "comPalavraNova": _bloco(com_novidade),
+    }
+
+
+def _secao_cobertura(cobertura: dict) -> list[str]:
+    linhas = [
+        "",
+        "## Cobertura lexical (treino x split avaliado)",
+        "",
+        f"- Vocabulario do treino: **{cobertura['vocabularioTreino']}** palavras",
+        f"- Exemplos com ao menos uma palavra inedita: "
+        f"**{cobertura['percentualComPalavraNova']:.2f}%**",
+        f"- Fracao media de palavras ineditas por exemplo: "
+        f"{cobertura['taxaMediaPalavrasNovas']:.4f}",
+        "",
+        "| Grupo | Casos | Erros | Acuracia |",
+        "| --- | ---: | ---: | ---: |",
+    ]
+    for titulo, chave in (
+        ("Só vocabulario visto no treino", "semPalavraNova"),
+        ("Com ao menos uma palavra inedita", "comPalavraNova"),
+    ):
+        bloco = cobertura[chave]
+        acuracia = "—" if bloco["acuracia"] is None else f"{bloco['acuracia']:.4f}"
+        linhas.append(f"| {titulo} | {bloco['casos']} | {bloco['erros']} | {acuracia} |")
+    linhas += [
+        "",
+        "> Uma diferenca grande entre as duas linhas indica que o modelo esta "
+        "memorizando moldes em vez de generalizar — o conjunto de treino precisa "
+        "de mais variedade lexical, nao de outro hiperparametro.",
+    ]
+    return linhas
+
+
+def _secao_rotulo_fraco(metadados_dataset: dict) -> list[str]:
+    concordancia = metadados_dataset.get("concordanciaRotuloFraco")
+    confusao = metadados_dataset.get("confusaoRotuloFracoManual")
+    if concordancia is None or not confusao:
+        return []
+    classes = list(confusao)
+    linhas = [
+        "",
+        "## Rotulo fraco (nota) x revisao humana",
+        "",
+        f"- Concordancia: **{concordancia:.2%}** em "
+        f"{metadados_dataset.get('rotulosManuaisNoTeste', 0)} exemplos revisados",
+        "",
+        "| Nota -> rotulo | " + " | ".join(classes) + " |",
+        "| --- | " + " | ".join("---:" for _ in classes) + " |",
+    ]
+    for fraco in classes:
+        linhas.append(
+            f"| **{fraco}** | "
+            + " | ".join(str(confusao[fraco].get(manual, 0)) for manual in classes)
+            + " |"
+        )
+    linhas += [
+        "",
+        "> Este e o teto do baseline: o classificador treina em rotulos derivados "
+        "da nota, entao nao pode ser mais correto do que o mapa nota->rotulo.",
+    ]
+    return linhas
+
+
 def gerar_relatorio(config: Config, classificador: ClassificadorSentimento, split: str = "teste",
                     maximo_erros: int = 25, confianca_revisao: float | None = None) -> dict:
     config.caminhos.preparar()
@@ -83,6 +198,7 @@ def gerar_relatorio(config: Config, classificador: ClassificadorSentimento, spli
     erros = [caso for caso in casos if not caso["acertou"]]
     revisao = [caso for caso in casos if caso["faixaConfianca"] in FAIXAS_REVISAO]
     resumo_confianca = resumir_confianca(casos)
+    cobertura = cobertura_lexical(config, casos, split)
 
     metadados_dataset = {}
     caminho_meta = config.caminhos.splits / "metadata.json"
@@ -107,6 +223,8 @@ def gerar_relatorio(config: Config, classificador: ClassificadorSentimento, spli
             "confiancaRevisao": confianca_revisao,
         },
         "resumoConfianca": resumo_confianca,
+        "coberturaLexical": cobertura,
+        "concordanciaRotuloFraco": metadados_dataset.get("concordanciaRotuloFraco"),
         "casosRevisao": len(revisao),
         "arquivoRevisao": str(caminho_revisao),
         "totalErros": len(erros),
@@ -137,6 +255,9 @@ def gerar_relatorio(config: Config, classificador: ClassificadorSentimento, spli
         len(revisao),
         caminho_revisao.name,
     )
+    if cobertura:
+        markdown += _secao_cobertura(cobertura)
+    markdown += _secao_rotulo_fraco(metadados_dataset)
     markdown += ["", f"## Erros ({len(erros)} no total, {min(len(erros), maximo_erros)} exibidos)", ""]
     for erro in erros[:maximo_erros]:
         markdown.append(

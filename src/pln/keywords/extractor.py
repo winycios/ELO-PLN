@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from ..schemas import AspectoDetectado, Polaridade, Sentimento
-from ..texto import MARCADOR_LIMITE_ORACAO, normalizar_para_busca_com_limites
+from ..texto import (aplicar_expressoes_fixas, ha_negacao_no_escopo, normalizar_para_busca_com_limites)
 from .aspects import ASPECTOS, JANELA_NEGACAO, NEGACOES, VERSAO_LEXICO
 
 
@@ -27,12 +27,13 @@ def _compilar_entradas() -> list[_Entrada]:
         )
         for termos, polaridade in faixas:
             for termo in termos:
+                termo_normalizado = aplicar_expressoes_fixas(termo)
                 entradas.append(
                     _Entrada(
                         aspecto=aspecto.nome,
                         termo=termo,
                         polaridade_base=polaridade,
-                        padrao=re.compile(rf"\b{re.escape(termo)}\b"),
+                        padrao=re.compile(rf"\b{re.escape(termo_normalizado)}\b"),
                     )
                 )
     entradas.sort(key=lambda entrada: len(entrada.termo), reverse=True)
@@ -120,19 +121,8 @@ class ExtratorAspectos:
 
     @staticmethod
     def _tem_negacao_antes(texto_normalizado: str, inicio: int) -> bool:
-        anteriores = texto_normalizado[:inicio].split()
-        ultimo_limite = -1
-        for indice, token in enumerate(anteriores):
-            if token == MARCADOR_LIMITE_ORACAO or token in {
-                "mas",
-                "porem",
-                "contudo",
-                "todavia",
-            }:
-                ultimo_limite = indice
-        escopo = anteriores[ultimo_limite + 1 :]
-        return any(token in NEGACOES for token in escopo[-JANELA_NEGACAO:])
+        return ha_negacao_no_escopo(texto_normalizado[:inicio].split(), JANELA_NEGACAO)
 
     @staticmethod
     def _termo_ja_negado(termo: str) -> bool:
-        return any(token in NEGACOES for token in termo.split())
+        return any(token in NEGACOES for token in aplicar_expressoes_fixas(termo).split())

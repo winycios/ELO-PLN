@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-VERSAO_LEXICO = "lexico-aspectos-v2"
+from ..texto import JANELA_NEGACAO_MODELO, NEGACOES
 
-NEGACOES = frozenset({"nao", "nunca", "nem", "jamais", "sem"})
-JANELA_NEGACAO = 3
+VERSAO_LEXICO = "lexico-aspectos-v3"
+
+JANELA_NEGACAO = JANELA_NEGACAO_MODELO
+
+__all__ = ["ASPECTOS", "Aspecto", "JANELA_NEGACAO", "NEGACOES", "VERSAO_LEXICO"]
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import csv
+import random
+from collections import defaultdict
 from pathlib import Path
 
 from ..config import Config
 from ..io_utils import escrever_json, escrever_jsonl, ler_json, ler_jsonl
 from ..logging_utils import obter_logger
-from ..schemas import Avaliacao, ExemploRotulado, Sentimento
+from ..schemas import CLASSES_STR, Avaliacao, ExemploRotulado, Sentimento
 from . import clean, split as split_mod, weak_labels
 
 logger = obter_logger(__name__)
@@ -120,24 +122,71 @@ def carregar_split(config: Config, nome: str) -> list[ExemploRotulado]:
 # --------------------------------------------------------------------------- #
 
 
+def amostra_estratificada(
+    exemplos: list[ExemploRotulado], tamanho: int, seed: int
+) -> list[ExemploRotulado]:
+
+    if tamanho >= len(exemplos):
+        return list(exemplos)
+
+    por_classe: dict[str, list[ExemploRotulado]] = defaultdict(list)
+    for exemplo in exemplos:
+        por_classe[exemplo.rotulo.value].append(exemplo)
+
+    aleatorio = random.Random(seed)
+    for itens in por_classe.values():
+        aleatorio.shuffle(itens)
+
+    presentes = [classe for classe in CLASSES_STR if por_classe[classe]]
+    piso = max(1, tamanho // (2 * len(presentes)))
+    cotas = {
+        classe: min(
+            len(por_classe[classe]),
+            max(piso, round(tamanho * len(por_classe[classe]) / len(exemplos))),
+        )
+        for classe in presentes
+    }
+
+    while sum(cotas.values()) != tamanho:
+        if sum(cotas.values()) > tamanho:
+            classe = max(presentes, key=lambda c: (cotas[c], c))
+            if cotas[classe] <= 1:
+                break
+            cotas[classe] -= 1
+        else:
+            candidatas = [c for c in presentes if cotas[c] < len(por_classe[c])]
+            if not candidatas:
+                break
+            classe = min(candidatas, key=lambda c: (cotas[c] / len(por_classe[c]), c))
+            cotas[classe] += 1
+
+    amostra = [
+        exemplo for classe in presentes for exemplo in por_classe[classe][: cotas[classe]]
+    ]
+    aleatorio.shuffle(amostra)
+    return amostra
+
+
 def exportar_amostra_revisao(config: Config, tamanho: int = 200) -> Path:
     teste = carregar_split(config, "teste")
-    amostra = teste[:tamanho]
+    amostra = amostra_estratificada(teste, tamanho, config.dataset.seed)
     caminho = config.caminhos.splits / ARQUIVO_AMOSTRA_REVISAO
     with caminho.open("w", encoding="utf-8", newline="") as arquivo:
         escritor = csv.writer(arquivo)
-        escritor.writerow(["avaliacao_reserva_id", "nota", "texto", "rotulo_fraco", "rotulo_revisado"])
+        escritor.writerow(["avaliacao_reserva_id", "nota", "texto", "rotulo_fraco", "origem_rotulo", "rotulo_revisado"])
         for exemplo in amostra:
             escritor.writerow(
                 [
                     exemplo.avaliacao_reserva_id,
                     exemplo.nota,
                     exemplo.texto,
-                    exemplo.rotulo.value,
+                    weak_labels.rotulo_fraco(exemplo.nota).value,
+                    exemplo.origem_rotulo,
                     exemplo.rotulo.value,
                 ]
             )
-    logger.info("Amostra para revisao manual: %d linhas em %s", len(amostra), caminho)
+    distribuicao = weak_labels.distribuicao(amostra)
+    logger.info("Amostra para revisao manual: %d linhas em %s (distribuicao %s)", len(amostra), caminho, distribuicao, )
     return caminho
 
 
@@ -155,27 +204,37 @@ def aplicar_revisao(config: Config, caminho_csv: Path | None = None) -> dict:
 
     teste = carregar_split(config, "teste")
     alterados = 0
+    confusao = {fraco: {manual: 0 for manual in CLASSES_STR} for fraco in CLASSES_STR}
     for exemplo in teste:
         novo = revisados.get(exemplo.avaliacao_reserva_id)
         if novo is None:
             continue
         if novo != exemplo.rotulo:
             alterados += 1
+        confusao[weak_labels.rotulo_fraco(exemplo.nota).value][novo.value] += 1
         weak_labels.marcar_revisao_manual(exemplo, novo)
 
     escrever_jsonl(_caminho_split(config, "teste"), (item.to_dict() for item in teste))
+
+    conferidos = sum(sum(linha.values()) for linha in confusao.values())
+    concordantes = sum(confusao[classe][classe] for classe in CLASSES_STR)
+    concordancia = round(concordantes / conferidos, 4) if conferidos else None
 
     caminho_meta = config.caminhos.splits / "metadata.json"
     if caminho_meta.exists():
         metadados = ler_json(caminho_meta)
         metadados["rotulosManuaisNoTeste"] = len(revisados)
         metadados["divergenciasRotuloFraco"] = alterados
+        metadados["concordanciaRotuloFraco"] = concordancia
+        metadados["confusaoRotuloFracoManual"] = confusao
         metadados["distribuicaoTeste"] = weak_labels.distribuicao(teste)
         escrever_json(caminho_meta, metadados)
 
     logger.info(
-        "Revisao aplicada: %d rotulos manuais, %d divergiam do rotulo fraco",
+        "Revisao aplicada: %d rotulos manuais, %d divergiam do rotulo anterior, "
+        "concordancia nota x humano %s",
         len(revisados),
         alterados,
+        "—" if concordancia is None else f"{concordancia:.2%}",
     )
-    return {"revisados": len(revisados), "divergencias": alterados}
+    return {"revisados": len(revisados), "divergencias": alterados, "concordanciaRotuloFraco": concordancia, "confusaoRotuloFracoManual": confusao}
